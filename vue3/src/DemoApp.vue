@@ -1,80 +1,3 @@
-<script>
-import { defineComponent } from 'vue'
-import FullCalendar from '@fullcalendar/vue3'
-import dayGridPlugin from '@fullcalendar/daygrid'
-import timeGridPlugin from '@fullcalendar/timegrid'
-import interactionPlugin from '@fullcalendar/interaction'
-import { INITIAL_EVENTS, createEventId } from './event-utils'
-
-export default defineComponent({
-  components: {
-    FullCalendar,
-  },
-  data() {
-    return {
-      calendarOptions: {
-        plugins: [
-          dayGridPlugin,
-          timeGridPlugin,
-          interactionPlugin // needed for dateClick
-        ],
-        headerToolbar: {
-          left: 'prev,next today',
-          center: 'title',
-          right: 'dayGridMonth,timeGridWeek,timeGridDay'
-        },
-        initialView: 'dayGridMonth',
-        initialEvents: INITIAL_EVENTS, // alternatively, use the `events` setting to fetch from a feed
-        editable: true,
-        selectable: true,
-        selectMirror: true,
-        dayMaxEvents: true,
-        weekends: true,
-        select: this.handleDateSelect,
-        eventClick: this.handleEventClick,
-        eventsSet: this.handleEvents
-        /* you can update a remote database when these fire:
-        eventAdd:
-        eventChange:
-        eventRemove:
-        */
-      },
-      currentEvents: [],
-    }
-  },
-  methods: {
-    handleWeekendsToggle() {
-      this.calendarOptions.weekends = !this.calendarOptions.weekends // update a property
-    },
-    handleDateSelect(selectInfo) {
-      let title = prompt('Please enter a new title for your event')
-      let calendarApi = selectInfo.view.calendar
-
-      calendarApi.unselect() // clear date selection
-
-      if (title) {
-        calendarApi.addEvent({
-          id: createEventId(),
-          title,
-          start: selectInfo.startStr,
-          end: selectInfo.endStr,
-          allDay: selectInfo.allDay
-        })
-      }
-    },
-    handleEventClick(clickInfo) {
-      if (confirm(`Are you sure you want to delete the event '${clickInfo.event.title}'`)) {
-        clickInfo.event.remove()
-      }
-    },
-    handleEvents(events) {
-      this.currentEvents = events
-    },
-  }
-})
-
-</script>
-
 <template>
   <div class='demo-app'>
     <div class='demo-app-sidebar'>
@@ -105,9 +28,14 @@ export default defineComponent({
           </li>
         </ul>
       </div>
+      <div class='demo-app-sidebar-section'>
+        <button @click="saveEventsToServer">Сохранить события</button>
+        <button @click="loadEventsFromServer">Загрузить события</button>
+      </div>
     </div>
     <div class='demo-app-main'>
       <FullCalendar
+        ref="fullCalendar"
         class='demo-app-calendar'
         :options='calendarOptions'
       >
@@ -120,8 +48,164 @@ export default defineComponent({
   </div>
 </template>
 
-<style lang='css'>
+<script>
+import { defineComponent } from 'vue'
+import FullCalendar from '@fullcalendar/vue3'
+import dayGridPlugin from '@fullcalendar/daygrid'
+import timeGridPlugin from '@fullcalendar/timegrid'
+import interactionPlugin from '@fullcalendar/interaction'
+import allLocales from '@fullcalendar/core/locales-all';
+import { INITIAL_EVENTS, createEventId } from './event-utils'
 
+export default defineComponent({
+  components: {
+    FullCalendar,
+  },
+  data() {
+    return {
+      selectableTimeRanges: [
+        {
+            daysOfWeek: [1, 2, 3, 4, 5], // Понедельник - Пятница
+            startTime: '09:00',
+            endTime: '13:00'
+        },
+        {
+            daysOfWeek: [1, 2, 3, 4, 5], // Понедельник - Пятница
+            startTime: '14:00',
+            endTime: '18:00'
+        }
+      ],
+      calendarOptions: {
+        selectConstraint: this.selectableTimeRanges,
+        locales: allLocales,             // Все доступные локализации
+        locale: 'ru',                   // Текущая локализация (русский язык)
+        firstDay: 1,                    // Первый день недели (1 - понедельник)
+        slotDuration: '00:15:00',       // Продолжительность каждого временного слота (15 минут)
+        slotMinTime: '09:00:00',        // Начальное время для представления дня/недели (9 утра)
+        slotMaxTime: '18:00:00',        // Конечное время для представления дня/недели (6 вечера)
+        nowIndicator: true,             // Отображает индикатор текущего времени
+        eventOverlap: true,             // Разрешает перекрытие событий
+        eventDurationEditable: true,    // Позволяет изменять продолжительность события путем перетаскивания
+        eventStartEditable: true,       // Позволяет изменять начало события путем перетаскивания
+        plugins: [                      // Плагины, используемые в календаре
+            dayGridPlugin,              // Плагин для месячного представления
+            timeGridPlugin,             // Плагин для представления дня/недели с временными слотами
+            interactionPlugin          // Плагин для взаимодействия (перетаскивание, выбор и т. д.)
+        ],
+        headerToolbar: {                // Панель инструментов в верхней части календаря
+            left: 'prev,next today',    // Кнопки в левой части
+            center: 'title',            // Заголовок (текущий месяц/неделя/день) в центре
+            right: 'dayGridMonth,timeGridWeek,timeGridDay' // Кнопки смены представления в правой части
+        },
+        initialView: 'dayGridMonth',    // Начальное представление календаря (месяц)
+        initialEvents: INITIAL_EVENTS,  // Начальные события
+        editable: true,                 // Позволяет редактировать события (перетаскивание, изменение размера)
+        selectable: true,               // Позволяет выбирать даты и временные интервалы
+        selectMirror: true,             // Отображает временное событие при перетаскивании
+        dayMaxEvents: true,             // Максимальное количество событий на день в месячном представлении
+        weekends: false,                 // Отображать выходные дни
+        select: this.handleDateSelect,  // Обработчик выбора даты или временного интервала
+        eventClick: this.handleEventClick, // Обработчик клика по событию
+        eventsSet: this.handleEvents,   // Обработчик установки событий
+        businessHours: [
+            // рабочие часы с 9 утра до 1 дня
+            {
+                daysOfWeek: [1, 2, 3, 4, 5], // Понедельник - Пятница
+                startTime: '09:00',
+                endTime: '13:00'
+            },
+            // рабочие часы с 2 дня до 6 вечера (исключая обеденное время с 1 до 2)
+            {
+                daysOfWeek: [1, 2, 3, 4, 5], // Понедельник - Пятница
+                startTime: '14:00',
+                endTime: '18:00'
+            }
+        ],
+     },
+      currentEvents: [],
+    }
+  },
+  methods: {
+    handleWeekendsToggle() {
+      this.calendarOptions.weekends = !this.calendarOptions.weekends
+    },
+    handleDateSelect(selectInfo) {
+      const selectedStart = selectInfo.start;
+      const lunchStart = new Date(selectedStart);
+      lunchStart.setHours(13, 0, 0);
+      const lunchEnd = new Date(selectedStart);
+      lunchEnd.setHours(14, 0, 0);
+
+      if (selectedStart >= lunchStart && selectedStart < lunchEnd) {
+        alert('В это время обеденный перерыв. Пожалуйста, выберите другое время.');
+        return;
+      }
+
+      let title = prompt('Please enter a new title for your event');
+      let calendarApi = selectInfo.view.calendar;
+
+      calendarApi.unselect();
+
+      if (title) {
+        calendarApi.addEvent({
+          id: createEventId(),
+          title,
+          start: selectInfo.startStr,
+          end: selectInfo.endStr,
+          allDay: selectInfo.allDay
+        });
+      }
+    },
+   
+    
+    handleEventClick(clickInfo) {
+      if (confirm(`Are you sure you want to delete the event '${clickInfo.event.title}'`)) {
+        clickInfo.event.remove()
+      }
+    },
+    handleEvents(events) {
+      this.currentEvents = events
+    },
+    async loadEventsFromServer() {
+        try {
+            const response = await fetch('http://localhost:3000/events');
+            const events = await response.json();
+            const calendarApi = this.$refs.fullCalendar.getApi();
+            calendarApi.removeAllEvents();
+            events.forEach(event => {
+                calendarApi.addEvent(event);
+            });
+        } catch (error) {
+            console.error("Error loading events:", error);
+        }
+    },
+    async saveEventsToServer() {
+        try {
+            const events = this.currentEvents.map(event => {
+                return {
+                    id: event.id,
+                    title: event.title,
+                    start: event.start.toISOString(),
+                    end: event.end ? event.end.toISOString() : null,
+                    allDay: event.allDay
+                };
+            });
+            await fetch('http://localhost:3000/events', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(events)
+            });
+        } catch (error) {
+            console.error("Error saving events:", error);
+        }
+    }
+  }
+})
+</script>
+
+<style lang='css'>
 h2 {
   margin: 0;
   font-size: 16px;
@@ -137,7 +221,7 @@ li {
   padding: 0;
 }
 
-b { /* used for event dates/times */
+b {
   margin-right: 3px;
 }
 
@@ -164,9 +248,8 @@ b { /* used for event dates/times */
   padding: 3em;
 }
 
-.fc { /* the calendar root */
+.fc {
   max-width: 1100px;
   margin: 0 auto;
 }
-
 </style>
