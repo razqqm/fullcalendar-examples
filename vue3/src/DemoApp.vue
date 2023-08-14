@@ -125,6 +125,9 @@ export default defineComponent({
       currentEvents: [],
     }
   },
+  mounted() {
+    this.loadEventsFromServer(); // загрузка при старте страницы
+  },
   methods: {
     handleWeekendsToggle() {
       this.calendarOptions.weekends = !this.calendarOptions.weekends
