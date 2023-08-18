@@ -1,4 +1,5 @@
 import simpy
+import math
 import json
 import os
 import shutil
@@ -46,6 +47,44 @@ def create_slots_grid(base_date):
                 
     return slots
 
+def time_to_minutes(time_value):
+    if isinstance(time_value, str):
+        h, m = map(int, time_value.split(':'))
+        return h * 60 + m
+    elif isinstance(time_value, time):
+        return time_value.hour * 60 + time_value.minute
+    else:
+        raise ValueError(f"Unsupported type for time_to_minutes: {type(time_value)}")
+
+
+
+def crosses_workhour_boundary(start_time, work_hours):
+    next_boundary = None
+
+    # Получим только время из start_time в минутах после полуночи
+    current_minutes = start_time.hour * 60 + start_time.minute
+
+    for interval in work_hours:
+        work_start, work_end = interval
+
+        # Преобразуем время в минуты после полуночи
+        work_start_minutes = time_to_minutes(work_start)
+        work_end_minutes = time_to_minutes(work_end)
+
+        # Если текущее время находится между началом и концом интервала, то следующая граница - это конец этого интервала
+        if work_start_minutes <= current_minutes < work_end_minutes:
+            next_boundary = datetime.combine(start_time.date(), datetime.time(work_end_minutes // 60, work_end_minutes % 60))
+            break
+
+    # Если не находим рабочий интервал, который содержит текущее время, это означает, что мы находимся вне рабочего времени (например, ночью)
+    if not next_boundary:
+        return True
+
+    # Если начало следующего слота будет за пределами текущего рабочего интервала
+    if start_time + timedelta(minutes=SLOT_DURATION) > next_boundary:
+        return True
+
+    return False
 
 
 
@@ -61,27 +100,50 @@ def distribute_tasks_on_slots(slots, tasks):
         start_time = parse(task['start'])
         end_time = parse(task['end'])
         duration = (end_time - start_time).seconds // 60
-        num_slots = duration // SLOT_DURATION
 
-        # Проверка наличия достаточного количества свободных слотов
-        if current_slot_index + num_slots > len(slots):
-            print(Fore.RED + f"Ошибка: не хватает слотов для задачи '{task['title']}' с {task['start']} до {task['end']}. Пропускаем её.")
-            continue
+        total_required_slots = duration // SLOT_DURATION + (1 if duration % SLOT_DURATION else 0)
+        remaining_slots = total_required_slots
+        part_number = 1
 
-        task_start_time = slots[current_slot_index][0]
-        task_end_time = slots[current_slot_index + num_slots - 1][0] + timedelta(minutes=SLOT_DURATION)
+        while remaining_slots > 0:
+            task_start_slot = current_slot_index
 
-        print(Fore.YELLOW + f"Задача '{task['title']}' началась в {task_start_time.strftime('%H:%M, %A, %Y-%m-%d')} (длительность: {num_slots} слота/слотов)")
-        print(Fore.GREEN + f"Задача '{task['title']}' завершилась в {task_end_time.strftime('%H:%M, %A, %Y-%m-%d')}")
+            # Если задача начинается на границе рабочего времени, переходим к следующему слоту
+            while crosses_workhour_boundary(slots[task_start_slot][0], WORK_HOURS):
+                task_start_slot += 1
 
-        # Обновляем временные метки задачи и конвертируем их в UTC
-        task['start'] = task_start_time.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-        task['end'] = task_end_time.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
-        updated_tasks.append(task)
+            task_end_slot = task_start_slot
 
-        current_slot_index += num_slots
+            # Проверяем, сколько слотов можно использовать перед следующим перерывом
+            while task_end_slot - task_start_slot < remaining_slots and not crosses_workhour_boundary(slots[task_end_slot][0], WORK_HOURS):
+                task_end_slot += 1
+
+            # Если текущее доступное рабочее время меньше оставшегося времени задачи, то используем все доступное время
+            slots_for_this_part = min(remaining_slots, task_end_slot - task_start_slot)
+            if slots_for_this_part == 0:
+                print(Fore.RED + f"Ошибка: задача '{task['title']}' не может быть распределена из-за ограничений времени. Пропускаем её.")
+                break
+
+            task_start_time = slots[task_start_slot][0]
+            task_end_time = slots[task_start_slot + slots_for_this_part - 1][0] + timedelta(minutes=SLOT_DURATION)
+
+            task_title = f"{task['title']} {part_number}/{math.ceil(total_required_slots / slots_for_this_part)}"
+
+            print(Fore.YELLOW + f"Задача '{task_title}' началась в {task_start_time.strftime('%H:%M, %A, %Y-%m-%d')} (длительность: {slots_for_this_part} слота/слотов)")
+            print(Fore.GREEN + f"Задача '{task_title}' завершилась в {task_end_time.strftime('%H:%M, %A, %Y-%m-%d')}")
+
+            updated_task = task.copy()
+            updated_task['title'] = task_title
+            updated_task['start'] = task_start_time.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            updated_task['end'] = task_end_time.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+            updated_tasks.append(updated_task)
+
+            current_slot_index = task_start_slot + slots_for_this_part
+            remaining_slots -= slots_for_this_part
+            part_number += 1
 
     return updated_tasks
+
 
 
 
@@ -116,6 +178,40 @@ def add_workdays(base, num_days):
 
 
 
+
+def save_slots_to_json(slots):
+    """Сохраняет слоты в файл events.json в виде задач."""
+    tasks = []
+    for idx, (start_time, _) in enumerate(slots):
+        end_time = start_time + timedelta(minutes=SLOT_DURATION)
+        task = {
+            "id": str(idx),
+            "title": "SLOT " + str(idx+1),
+            "start": start_time.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            "end": end_time.astimezone(pytz.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            "allDay": False
+        }
+        tasks.append(task)
+    
+    with open('events.json', 'a') as file:
+        for task in tasks:
+            file.write(json.dumps(task) + '\n')
+
+
+def remove_slot_events_from_file():
+    with open('events.json', 'r') as file:
+        events = [json.loads(line.strip()) for line in file if line.strip()]
+
+    # Фильтрация событий, исключая события со словом "SLOT" в начале title
+    non_slot_events = [event for event in events if not event['title'].startswith("SLOT")]
+
+    with open('events.json', 'w') as file:
+        for event in non_slot_events:
+            file.write(json.dumps(event) + '\n')
+    print(Fore.GREEN + "События-слоты удалены из events.json!")
+
+
+
 if __name__ == "__main__":
     current_datetime = datetime.now(TIMEZONE)
     
@@ -141,6 +237,8 @@ if __name__ == "__main__":
     while True:
         print(Fore.CYAN + "Выберите команду:")
         print("1 - Провести симуляцию")
+        print("2 - Сохранить сетку слотов")
+        print("3 - Удалить события-слоты из файла")
         print("0 - Завершить работу")
         choice = input(Fore.MAGENTA + "Ваш выбор: ")
 
@@ -177,6 +275,13 @@ if __name__ == "__main__":
                 print(Fore.GREEN + f"События сохранены! Резервная копия создана как {backup_file}")
             else:
                 print(Fore.RED + "События не сохранены.")
+
+        elif choice == "2":
+            save_slots_to_json(slots_grid)
+            print(Fore.GREEN + "Сетка слотов сохранена в events.json!")
+
+        elif choice == "3":
+            remove_slot_events_from_file()
 
         elif choice == "0":
             print(Fore.GREEN + "Работа скрипта завершена!")
